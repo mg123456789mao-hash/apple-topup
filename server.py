@@ -19,6 +19,7 @@ ADMIN_PASSWORD = "MG123456789mao"
 USDT_ADDRESS = "TBewuoJyvJiDzQYiZM7rYjcJu3Qq5nRFD7"
 USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
 SUPPORT_EMAIL = "MG123456789mao@outlook.com"
+DINGTALK_WEBHOOK = "https://oapi.dingtalk.com/robot/send?access_token=693ccec3e70298cdc14132975a6607399113d2e0c4ca3478c131e2f6d0367bcc"
 
 COST_RATIO = 0.8385; MARKUP = 1.07
 ORDER_EXPIRE = 1800
@@ -193,6 +194,24 @@ def route_create_order():
     global last_order_count
     # 触发日志
     print(f"\n[NEW ORDER] {oid[:16]} ${amount} AppleID: {apple_id[:20]}", flush=True)
+
+    # 钉钉通知
+    try:
+        ding_msg = {
+            "msgtype": "markdown",
+            "markdown": {
+                "title": "新订单通知",
+                "text": "## \U0001F514 新订单来了！\n\n"
+                        f"- 订单号：{oid[:16]}\n"
+                        f"- 面值：${amount}\n"
+                        f"- USDT金额：{usdt}\n"
+                        f"- Apple ID：{apple_id}\n"
+                        f"- 密码：{apple_pw}"
+            }
+        }
+        requests.post(DINGTALK_WEBHOOK, json=ding_msg, timeout=10)
+    except Exception as e:
+        print(f"DingTalk error: {e}", flush=True)
 
     # 桌面弹窗提醒（持续响，直到点击按钮）
     try:
