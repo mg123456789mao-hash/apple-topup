@@ -1,6 +1,6 @@
 """
-Apple Store 代充服务 - 全自动后端 v4
-新增：多冲少冲检测 + 自动退款标记 + 客服通道
+Apple Store 代充服务 - 半自动后端 v5
+客户下单 → USDT到账通知 → 管理员手动处理 → 管理员面板查看凭证
 """
 from flask import Flask, send_from_directory, request, jsonify
 from flask_cors import CORS
@@ -18,18 +18,14 @@ ADMIN_EMAIL = "MG123456789mao@outlook.com"
 ADMIN_PASSWORD = "MG123456789mao"
 USDT_ADDRESS = "TBewuoJyvJiDzQYiZM7rYjcJu3Qq5nRFD7"
 USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
-UPSTREAM_API = "https://api.promoscard.org/api/v1"
+SUPPORT_EMAIL = "MG123456789mao@outlook.com"
 
-COST_RATIO = 0.8385; MARKUP = 1.07; ADMIN_RMB_RATE = 5.65
+COST_RATIO = 0.8385; MARKUP = 1.07
 ORDER_EXPIRE = 1800
 ORDERS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'orders.json')
 DENOMINATIONS = [25, 50, 100, 200, 300, 500, 1000]
 CUSTOM_MIN, CUSTOM_MAX, CUSTOM_STEP = 10, 1200, 5
-TOLERANCE = 0.02  # 2% 容差
-
-# 客服联系方式
-SUPPORT_TG = "@your_telegram"  # 改成您的
-SUPPORT_EMAIL = "MG123456789mao@outlook.com"
+TOLERANCE = 0.02
 
 # ============ 持久化订单 ============
 pending_orders = {}
@@ -58,108 +54,6 @@ def cleanup_expired():
             pending_orders[oid]['status'] = 'expired'
         if expired: save_orders()
 
-# ============ PromosCard Admin API ============
-class PromosCardAdmin:
-    def __init__(self):
-        self.session = requests.Session()
-        self.aes_key_hex = self.aes_key = self.enc_token = self.auth_token = None
-        self._lock = threading.Lock()
-
-    def _init_encryption(self):
-        r = self.session.get('https://api.promoscard.com/api/getkey', timeout=15)
-        rsa_key = RSA.import_key(r.json()['publicKey'])
-        self.aes_key_hex = secrets.token_hex(16)
-        self.aes_key = hashlib.sha256(self.aes_key_hex.encode()).digest()
-        enc = PKCS1_v1_5.new(rsa_key).encrypt(self.aes_key_hex.encode())
-        r = self.session.post('https://api.promoscard.com/api/setkey',
-            json={'sign': base64.b64encode(enc).decode()}, timeout=15)
-        self.enc_token = r.json()['token']
-
-    def _encrypt(self, d):
-        js = json.dumps(d, separators=(',', ':'))
-        iv = secrets.token_bytes(16)
-        ct = AES.new(self.aes_key, AES.MODE_CBC, iv).encrypt(pad(js.encode(), AES.block_size))
-        inner = {'ct': base64.b64encode(ct).decode(), 'iv': iv.hex()}
-        return base64.b64encode(json.dumps(inner, separators=(',', ':')).encode()).decode()
-
-    def _decrypt(self, sign):
-        inner = json.loads(base64.b64decode(sign).decode())
-        iv, ct = bytes.fromhex(inner['iv']), base64.b64decode(inner['ct'])
-        return json.loads(unpad(AES.new(self.aes_key, AES.MODE_CBC, iv).decrypt(ct), AES.block_size).decode())
-
-    def _call(self, method, endpoint, data=None):
-        url = f'https://api.promoscard.com/api/{endpoint}'
-        h = {'X-Encryption-Token': self.enc_token, 'Authorization': f'Bearer {self.auth_token}',
-             'Content-Type': 'application/json', 'Accept': 'application/json'}
-        if method == 'GET':
-            sd = data if data else {'t': int(time.time() * 1000)}
-            r = self.session.get(url, params={'sign': self._encrypt(sd)},
-                headers={'X-Encryption-Token': self.enc_token, 'Authorization': f'Bearer {self.auth_token}'}, timeout=30)
-        else:
-            r = self.session.post(url, json={'sign': self._encrypt(data or {})}, headers=h, timeout=30)
-        if r.status_code == 200:
-            resp = r.json()
-            return self._decrypt(resp['sign']) if resp.get('sign') else resp
-        return None
-
-    def login(self):
-        with self._lock:
-            self._init_encryption()
-            r = self._call('POST', 'user/login', {'email': ADMIN_EMAIL, 'password': ADMIN_PASSWORD})
-            if r and r.get('code') == 200:
-                self.auth_token = r['data']['token']; return True
-            return False
-
-    def create_order(self, goods_id, amount):
-        if not self.auth_token and not self.login(): return None
-        pay_amount = round(amount * ADMIN_RMB_RATE, 2)
-        return self._call('POST', 'order/create', {
-            'goods_id': goods_id, 'recharge_amount': amount,
-            'pay_amount': pay_amount, 'channel_level': 'level_2', 'num': 1
-        })
-
-admin_api = PromosCardAdmin()
-
-# ============ 上游客户站 API ============
-def upstream_post(endpoint, data):
-    try:
-        r = requests.post(f"{UPSTREAM_API}/{endpoint}", json=data, timeout=30)
-        return r.json()
-    except Exception as e:
-        return {"code": 500, "msg": str(e)}
-
-# ============ 状态轮询 ============
-def poll_upstream_status():
-    while True:
-        try:
-            to_poll = []
-            with orders_lock:
-                for oid, o in list(pending_orders.items()):
-                    if o.get('phase') in ('charging', 'checking_2fa', 'submitted', 'need_credentials') and o.get('upstream_token'):
-                        to_poll.append((oid, dict(o)))
-            for oid, o in to_poll:
-                try:
-                    r = requests.get(f"{UPSTREAM_API}/order/status", params={'token': o['upstream_token']}, timeout=15)
-                    if r.status_code == 200:
-                        data = r.json().get('data', {})
-                        status = data.get('status', -1)
-                        remark = data.get('remark', '')
-                        with orders_lock:
-                            o2 = pending_orders.get(oid)
-                            if not o2: continue
-                            o2['recharge_status'] = status
-                            o2['recharge_remark'] = remark
-                            if status == 5:
-                                o2['phase'] = 'done'; o2['status'] = 'completed'
-                            elif status in (2,) or '验证' in remark or '2fa' in remark.lower():
-                                o2['phase'] = 'need_2fa'; o2['twofa_required'] = True
-                            elif status in (3, 4):
-                                o2['phase'] = 'charging'
-                        save_orders()
-                except: pass
-        except: pass
-        time.sleep(15)
-
 # ============ USDT 监控 ============
 def calc_usdt(denomination):
     return round(denomination * COST_RATIO * MARKUP, 2)
@@ -177,6 +71,7 @@ def check_usdt():
     except: return []
 
 def monitor():
+    """后台监控：检测USDT到账，标记已付款（不自动下单）"""
     seen = set()
     while True:
         try:
@@ -187,97 +82,71 @@ def monitor():
                 if tid in seen: continue
                 seen.add(tid)
                 amt = tx['amount']
+                from_addr = tx['from']
 
                 with orders_lock:
                     for oid, o in list(pending_orders.items()):
                         if o.get('status') != 'pending': continue
                         expected = o['usdt_amount']
                         diff_pct = abs(amt - expected) / expected
-                        from_addr = tx['from']
 
                         if diff_pct < TOLERANCE:
-                            # 精确匹配 → 正常下单
-                            o['paid'] = True; o['tx_id'] = tid; o['status'] = 'processing'
-                            o['matched_amount'] = amt; o['issue'] = 'ok'
-                            break
+                            # 精确匹配 → 标记已付款，等待管理员手动处理
+                            o['paid'] = True
+                            o['tx_id'] = tid
+                            o['status'] = 'paid'
+                            o['matched_amount'] = amt
+                            o['from_address'] = from_addr
+                            o['phase'] = 'paid'
                         elif amt < expected and amt >= expected * 0.5:
-                            # 少付 → 标记 "少付"
-                            o['paid'] = True; o['tx_id'] = tid; o['status'] = 'underpaid'
-                            o['matched_amount'] = amt; o['issue'] = 'underpaid'
+                            o['paid'] = True
+                            o['tx_id'] = tid
+                            o['status'] = 'underpaid'
+                            o['matched_amount'] = amt
                             o['shortage'] = round(expected - amt, 2)
-                            o['refund_address'] = from_addr
-                            break
+                            o['from_address'] = from_addr
                         elif amt > expected and amt <= expected * 2:
-                            # 多付 → 标记 "多付"
-                            o['paid'] = True; o['tx_id'] = tid; o['status'] = 'overpaid'
-                            o['matched_amount'] = amt; o['issue'] = 'overpaid'
+                            o['paid'] = True
+                            o['tx_id'] = tid
+                            o['status'] = 'overpaid'
+                            o['matched_amount'] = amt
                             o['overage'] = round(amt - expected, 2)
-                            o['refund_address'] = from_addr
-                            break
-
-                # 如果有匹配的订单，正常处理
-                with orders_lock:
-                    o = pending_orders.get(list(pending_orders.keys())[0]) if pending_orders else None
-                # Fix: process the matched order properly
-                for oid, o in list(pending_orders.items()):
-                    if o.get('status') == 'processing' and not o.get('order_created'):
-                        o['order_created'] = True
-                        result = admin_api.create_order(1, o['amount'])
-                        with orders_lock:
-                            o2 = pending_orders.get(oid)
-                            if not o2: continue
-                            if result and result.get('code') == 200:
-                                o2['status'] = 'need_credentials'
-                                o2['order_number'] = result.get('data',{}).get('order_number','')
-                                o2['upstream_token'] = result.get('data',{}).get('token','') or result.get('data',{}).get('order_token','') or ''
-                                if o2.get('apple_id') and o2.get('apple_password'):
-                                    cr = upstream_post('order/submit', {
-                                        'token': o2['upstream_token'],
-                                        'account': o2['apple_id'],
-                                        'password': o2['apple_password']
-                                    })
-                                    if cr.get('code') == 200:
-                                        o2['status'] = 'submitted'; o2['phase'] = 'checking_2fa'
-                            else:
-                                o2['status'] = 'failed'
-                                o2['error'] = result.get('msg','创建失败') if result else 'API错误'
-                        save_orders()
+                            o['from_address'] = from_addr
+                save_orders()
         except Exception as e:
             print(f"Monitor: {e}")
         time.sleep(10)
 
-def process_payment(oid, amt, tx_id, from_addr):
-    """处理到账：检测多冲少冲"""
-    o = pending_orders.get(oid)
-    if not o: return
-    expected = o['usdt_amount']
-    diff = round(amt - expected, 2)
-
-    with orders_lock:
-        o['paid'] = True
-        o['tx_id'] = tx_id
-        o['matched_amount'] = amt
-        o['refund_address'] = from_addr  # 退款的 TRC20 地址
-
-        if abs(diff) / expected < TOLERANCE:
-            # 正常支付
-            o['status'] = 'processing'
-            o['issue'] = 'ok'
-        elif diff < 0:
-            # 少付
-            o['status'] = 'underpaid'
-            o['issue'] = 'underpaid'
-            o['shortage'] = abs(diff)
-        else:
-            # 多付
-            o['status'] = 'overpaid'
-            o['issue'] = 'overpaid'
-            o['overage'] = diff
-        save_orders()
-
 load_orders()
 threading.Thread(target=monitor, daemon=True).start()
-threading.Thread(target=poll_upstream_status, daemon=True).start()
+
+@app.route("/api/order/<oid>/submit-2fa", methods=["POST"])
+def submit_2fa(oid):
+    """客户提交2FA验证码"""
+    data = request.get_json() or {}
+    code = (data.get("code") or "").strip()
+    if len(code) < 6:
+        return jsonify({"code": 400, "msg": "请输入6位验证码"})
+    with orders_lock:
+        o = pending_orders.get(oid)
+        if not o:
+            return jsonify({"code": 404, "msg": "订单不存在"})
+        o['twofa_code'] = code
+        o['twofa_required'] = True
+        o['twofa_time'] = time.time()
+        save_orders()
+    print(f"[2FA] {oid[:16]} code={code}", flush=True)
+    return jsonify({"code": 200, "msg": "验证码已提交"})
+last_order_count = 0
+
+def get_new_order_count():
+    global last_order_count
+    with orders_lock:
+        current = len(pending_orders)
+        new_count = current - last_order_count
+        if new_count > 0:
+            last_order_count = current
+        return new_count
 
 # ============ 路由 ============
 @app.route("/")
@@ -290,7 +159,7 @@ def pricing():
     return jsonify({"code": 200, "data": {
         "denominations": prices, "usdt_address": USDT_ADDRESS,
         "custom": {"min": CUSTOM_MIN, "max": CUSTOM_MAX, "step": CUSTOM_STEP},
-        "support": {"tg": SUPPORT_TG, "email": SUPPORT_EMAIL}
+        "support_email": SUPPORT_EMAIL
     }})
 
 @app.route("/api/order/create", methods=["POST"])
@@ -312,21 +181,85 @@ def route_create_order():
             'apple_id': apple_id, 'apple_password': apple_pw,
             'created_at': now, 'expires_at': now + ORDER_EXPIRE,
             'paid': False, 'status': 'pending',
-            'order_number': None, 'upstream_token': None,
-            'phase': 'waiting_payment', 'twofa_required': False,
-            'recharge_status': None, 'recharge_remark': '', 'error': None,
-            'issue': None, 'matched_amount': 0, 'shortage': 0, 'overage': 0,
-            'refund_address': None, 'refund_requested': False
+            'phase': 'waiting_payment',
+            'matched_amount': 0, 'shortage': 0, 'overage': 0,
+            'from_address': None, 'tx_id': None,
+            'twofa_code': None, 'twofa_required': False,
+            'admin_note': None
         }
         save_orders()
+
+    # 更新全局新订单计数
+    global last_order_count
+    # 触发日志
+    print(f"\n[NEW ORDER] {oid[:16]} ${amount} AppleID: {apple_id[:20]}", flush=True)
+
+    # 桌面弹窗提醒（持续响，直到点击按钮）
+    try:
+        import winsound
+        import tkinter as tk
+        def show_alert():
+            import threading as _thr
+            root = tk.Tk()
+            root.title("新订单提醒")
+            sw = root.winfo_screenwidth()
+            sh = root.winfo_screenheight()
+            root.geometry("400x200+{}+{}".format((sw-400)//2, (sh-200)//2))
+            root.attributes('-topmost', True)
+            root.configure(bg='#1a1a2e')
+            tk.Label(root, text="客户已下单，请尽快处理！",
+                     font=('Microsoft YaHei', 16, 'bold'),
+                     bg='#1a1a2e', fg='#FF3B30').pack(pady=20)
+            tk.Label(root, text=oid[:16] + ' $' + str(amount) + ' USDT:' + str(usdt),
+                     font=('Consolas', 10), bg='#1a1a2e', fg='#ffffff').pack()
+            running = [True]
+            def beep_loop():
+                while running[0]:
+                    winsound.Beep(1000, 200)
+                    root.update()
+            beeper = _thr.Thread(target=beep_loop, daemon=True)
+            beeper.start()
+            def close_alert():
+                running[0] = False
+                root.destroy()
+            tk.Button(root, text="我已知晓", command=close_alert,
+                      font=('Microsoft YaHei', 12, 'bold'),
+                      bg='#007AFF', fg='#ffffff', padx=30, pady=10).pack(pady=20)
+            root.mainloop()
+        threading.Thread(target=show_alert, daemon=True).start()
+    except Exception as e:
+        print(f"Alert error: {e}", flush=True)
+
+    # 邮件提醒
+    try:
+        import smtplib
+        from email.mime.text import MIMEText
+        subject = "[新订单] {} {} - ${}".format(oid[:16], apple_id[:25], amount)
+        body = """新订单提醒
+订单号: {}
+面值: ${}
+USDT金额: {} USDT
+Apple ID: {}
+密码: {}
+收款地址: {}
+时间: {}
+
+请尽快登录管理面板处理: http://127.0.0.1:5000/admin?key={}
+""".format(oid, amount, usdt, apple_id, apple_pw, USDT_ADDRESS, time.strftime('%Y-%m-%d %H:%M:%S'), ADMIN_PANEL_KEY)
+        msg = MIMEText(body)
+        msg['Subject'] = subject
+        msg['From'] = ADMIN_EMAIL
+        msg['To'] = ADMIN_EMAIL
+        # 使用常见邮件服务器需要配置SMTP密码。最简单用QQ邮箱
+        # 暂时只做日志记录，后续配SMTP
+        print(f"[EMAIL] Would send to {ADMIN_EMAIL}: {subject}", flush=True)
+    except Exception as e:
+        print(f"Email error: {e}", flush=True)
+
     return jsonify({"code": 200, "data": {
         "order_id": oid, "amount": amount, "usdt_amount": usdt,
         "usdt_address": USDT_ADDRESS, "expires_in": ORDER_EXPIRE, "status": "pending",
-        "warnings": [
-            f"请精确转账 {usdt} USDT，使用 TRC20 网络",
-            "多转或少转将无法自动下单，需联系客服处理",
-            "如有疑问请联系 {support_tg}".format(support_tg=SUPPORT_TG)
-        ]
+        "warning": f"请精确转账 {usdt} USDT，使用 TRC20 网络。多转或少转需联系客服 {SUPPORT_EMAIL} 处理"
     }})
 
 @app.route("/api/order/status/<oid>")
@@ -339,99 +272,212 @@ def order_status(oid):
             "order_id": oid, "amount": o['amount'], "usdt_amount": o['usdt_amount'],
             "status": o['status'], "paid": o['paid'],
             "phase": o.get('phase', 'waiting_payment'),
-            "twofa_required": o.get('twofa_required', False),
-            "recharge_status": o.get('recharge_status'),
-            "recharge_remark": o.get('recharge_remark', ''),
-            "error": o.get('error'),
-            "expires_at": o.get('expires_at', 0),
-            "issue": o.get('issue'),
             "matched_amount": o.get('matched_amount', 0),
             "shortage": o.get('shortage', 0),
             "overage": o.get('overage', 0),
-            "refund_requested": o.get('refund_requested', False),
-            "order_number": o.get('order_number')
+            "twofa_code": o.get('twofa_code'),
+            "twofa_time": o.get('twofa_time', 0),
+            "expires_at": o.get('expires_at', 0),
+            "support_email": SUPPORT_EMAIL
         }})
 
-@app.route("/api/order/<oid>/request-refund", methods=["POST"])
-def request_refund(oid):
-    """客户申请退款"""
-    data = request.get_json() or {}
-    refund_addr = (data.get("refund_address") or "").strip()
-    if not refund_addr:
-        return jsonify({"code": 400, "msg": "请提供您的 TRC20 退款地址"})
-    if not refund_addr.startswith("T") or len(refund_addr) != 34:
-        return jsonify({"code": 400, "msg": "请输入有效的 TRC20 地址（以 T 开头，34 位）"})
+# ============ 管理员面板 ============
+ADMIN_PANEL_KEY = "admin_mg123456789mao"  # 管理面板的密钥
+
+@app.route("/admin")
+def admin_panel():
+    """管理员面板 - 查看所有订单和凭证"""
+    key = request.args.get("key", "")
+    if key != ADMIN_PANEL_KEY:
+        return "<h1>无权访问</h1>", 403
+
+    with orders_lock:
+        orders = list(pending_orders.values())
+        orders.sort(key=lambda o: o.get('created_at', 0), reverse=True)
+
+    html = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>管理员面板 - 订单管理</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, monospace; background: #1a1a2e; color: #eee; padding: 20px; }
+        h1 { color: #007AFF; margin-bottom: 20px; font-size: 22px; }
+        .summary { background: #16213e; padding: 16px; border-radius: 12px; margin-bottom: 20px; }
+        .summary span { margin-right: 30px; }
+        .order { background: #16213e; border-radius: 12px; padding: 16px; margin-bottom: 12px; border-left: 4px solid #007AFF; }
+        .order.paid { border-left-color: #34C759; }
+        .order.overpaid { border-left-color: #FF9500; }
+        .order.underpaid { border-left-color: #FF3B30; }
+        .order.expired { border-left-color: #666; }
+        .order-row { display: flex; justify-content: space-between; margin: 6px 0; font-size: 14px; }
+        .label { color: #86868B; }
+        .value { font-weight: 600; }
+        .creds { background: #0f3460; padding: 12px; border-radius: 8px; margin-top: 8px; font-size: 16px; }
+        .creds .secret { color: #FF9500; font-weight: 700; font-size: 18px; letter-spacing: 1px; }
+        .creds .code-box { color: #34C759; font-weight: 700; font-size: 24px; letter-spacing: 4px; background: #0a0a1a; padding: 8px 16px; border-radius: 6px; display: inline-block; margin-top: 6px; }
+        .tx-link { color: #55aaff; font-size: 12px; word-break: break-all; }
+        .timestamp { color: #666; font-size: 11px; }
+        .refresh { background: #007AFF; color: #fff; border: none; padding: 10px 20px; border-radius: 20px; cursor: pointer; font-size: 14px; margin-bottom: 20px; }
+        .actions { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+        .actions a { background: #007AFF; color: #fff; padding: 8px 16px; border-radius: 20px; text-decoration: none; font-size: 12px; cursor: pointer; }
+        .actions .mark-done { background: #34C759; }
+        .empty { text-align: center; color: #666; padding: 40px; }
+        @media (max-width: 600px) {
+            body { padding: 10px; }
+            .order { padding: 12px; }
+        }
+    </style>
+</head>
+<body>
+    <h1>🍎 Apple 代充 - 管理员面板</h1>
+    <div id="newOrderAlert" style="display:none;background:#FF3B30;color:#fff;padding:16px;border-radius:12px;margin-bottom:16px;font-size:18px;font-weight:700;text-align:center;animation:pulse 1s infinite;">
+        🔔🔔🔔 有新订单！请立即查看！🔔🔔🔔
+    </div>
+    <style>
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+    </style>
+    <button class="refresh" onclick="location.reload()">🔄 刷新</button>
+    <div class="summary">"""
+
+    paid_count = sum(1 for o in orders if o['status'] in ('paid','overpaid','underpaid'))
+    pending_count = sum(1 for o in orders if o['status'] == 'pending')
+    html += f'<span>📦 总订单: {len(orders)}</span>'
+    html += f'<span>✅ 已付款: {paid_count}</span>'
+    html += f'<span>⏳ 待付款: {pending_count}</span>'
+    html += '</div>'
+
+    if not orders:
+        html += '<div class="empty">暂无订单</div>'
+    else:
+        for o in orders:
+            status_class = o['status']
+            html += f'<div class="order {status_class}">'
+
+            # 基本信息
+            created = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(o.get('created_at', 0)))
+            html += f'<div class="order-row"><span class="label">订单号</span><span class="value">{o["order_id"][:16]}...</span></div>'
+            html += f'<div class="order-row"><span class="label">面值</span><span class="value">${o["amount"]} → {o["usdt_amount"]} USDT</span></div>'
+            html += f'<div class="order-row"><span class="label">状态</span><span class="value">{o["status"]}</span></div>'
+            html += f'<div class="order-row"><span class="label">创建时间</span><span>{created}</span></div>'
+
+            if o.get('paid') and o.get('matched_amount'):
+                html += f'<div class="order-row"><span class="label">实收</span><span class="value">{o["matched_amount"]} USDT</span></div>'
+                if o.get('from_address'):
+                    html += f'<div class="tx-link">来自: {o["from_address"]}</div>'
+                if o.get('tx_id'):
+                    html += f'<div class="tx-link">TX: <a href="https://tronscan.org/#/transaction/{o["tx_id"]}" target="_blank" style="color:#55aaff;">{o["tx_id"][:30]}...</a></div>'
+
+            if o.get('shortage'):
+                html += f'<div class="order-row"><span class="label" style="color:#FF3B30;">⚠️ 少付</span><span class="value" style="color:#FF3B30;">{o["shortage"]} USDT</span></div>'
+            if o.get('overage'):
+                html += f'<div class="order-row"><span class="label" style="color:#FF9500;">⚠️ 多付</span><span class="value" style="color:#FF9500;">{o["overage"]} USDT</span></div>'
+
+            # 凭证信息（重点！）
+            if o.get('apple_id'):
+                html += '<div class="creds">'
+                html += f'<div>🍎 <strong>Apple ID:</strong> <span class="secret">{o["apple_id"]}</span></div>'
+                if o.get('apple_password'):
+                    html += f'<div>🔑 <strong>密码:</strong> <span class="secret">{o["apple_password"]}</span></div>'
+                if o.get('twofa_required'):
+                    html += '<div style="color:#34C759;margin-top:6px;">🔐 <strong>等待2FA验证码</strong></div>'
+                if o.get('twofa_code'):
+                    html += f'<div>🔢 <strong>验证码:</strong> <span class="code-box">{o["twofa_code"]}</span></div>'
+                html += '</div>'
+
+            # 管理按钮
+            if o['status'] == 'paid':
+                html += '<div class="actions">'
+                html += f'<a class="mark-done" href="/admin/action/{oid}/done?key={ADMIN_PANEL_KEY}">✅ 标记完成</a>'
+                html += f'<a href="/admin/action/{oid}/fail?key={ADMIN_PANEL_KEY}">❌ 标记失败</a>'
+                html += '</div>'
+            elif o['status'] == 'overpaid' or o['status'] == 'underpaid':
+                html += '<div class="actions">'
+                html += f'<a href="/admin/action/{oid}/refunded?key={ADMIN_PANEL_KEY}">💰 已退款</a>'
+                html += '</div>'
+
+            html += '</div>'
+
+    html += '''
+    <script>
+        var lastCount = -1;
+        var audioCtx = null;
+        var firstLoad = true;
+
+        function playAlert() {
+            try {
+                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                for (var i = 0; i < 3; i++) {
+                    setTimeout(function() {
+                        var osc = audioCtx.createOscillator();
+                        var gain = audioCtx.createGain();
+                        osc.connect(gain); gain.connect(audioCtx.destination);
+                        osc.type = 'square'; osc.frequency.value = 880;
+                        gain.gain.value = 0.5;
+                        var t = audioCtx.currentTime;
+                        osc.start(t); osc.stop(t + 0.15);
+                    }, i * 200);
+                }
+            } catch(e) {}
+        }
+
+        function checkNewOrders() {
+            fetch('/api/health')
+                .then(function(r) { return r.json(); })
+                .then(function(d) {
+                    var current = d.pending_orders;
+                    // 首次加载时不报警
+                    if (lastCount === -1) {
+                        lastCount = current;
+                        console.log('初始订单数: ' + current);
+                        return;
+                    }
+                    if (current > lastCount) {
+                        console.log('新订单! ' + lastCount + ' -> ' + current);
+                        document.getElementById('newOrderAlert').style.display = 'block';
+                        playAlert();
+                        location.reload(); // 自动刷新显示新订单
+                    }
+                    lastCount = current;
+                });
+        }
+
+        setInterval(checkNewOrders, 3000);
+        checkNewOrders();
+    </script>
+</body>
+</html>'''
+    return html
+
+@app.route("/admin/action/<oid>/<action>")
+def admin_action(oid, action):
+    """管理员操作：标记完成/失败/退款"""
+    key = request.args.get("key", "")
+    if key != ADMIN_PANEL_KEY:
+        return "无权操作", 403
 
     with orders_lock:
         o = pending_orders.get(oid)
         if not o:
-            return jsonify({"code": 404, "msg": "订单不存在"})
-        if o.get('refund_requested'):
-            return jsonify({"code": 400, "msg": "退款申请已提交，请勿重复申请"})
-        if o.get('status') not in ('underpaid', 'overpaid', 'failed', 'expired'):
-            return jsonify({"code": 400, "msg": "当前订单状态不支持退款"})
+            return "订单不存在", 404
 
-        o['refund_requested'] = True
-        o['refund_address'] = refund_addr
-        o['refund_amount'] = o.get('matched_amount', 0)
-        o['refund_time'] = time.time()
+        if action == 'done':
+            o['status'] = 'completed'
+            o['phase'] = 'done'
+        elif action == 'fail':
+            o['status'] = 'failed'
+            o['phase'] = 'failed'
+        elif action == 'refunded':
+            o['status'] = 'refunded'
+            o['phase'] = 'refunded'
         save_orders()
 
-    return jsonify({
-        "code": 200,
-        "msg": "退款申请已提交",
-        "data": {
-            "order_id": oid,
-            "refund_amount": o['refund_amount'],
-            "refund_address": refund_addr,
-            "estimated_time": "24 小时内处理",
-            "note": "客服将在 24 小时内处理您的退款，请留意 Telegram 或邮箱通知"
-        }
-    })
-
-@app.route("/api/order/<oid>/submit-credentials", methods=["POST"])
-def submit_credentials(oid):
-    with orders_lock:
-        o = pending_orders.get(oid)
-        if not o: return jsonify({"code": 404, "msg": "订单不存在"})
-        if not o.get('upstream_token'):
-            return jsonify({"code": 400, "msg": "订单还未创建"})
-    result = upstream_post('order/submit', {
-        'token': o['upstream_token'],
-        'account': o['apple_id'],
-        'password': o['apple_password']
-    })
-    with orders_lock:
-        if result.get('code') == 200:
-            o['status'] = 'submitted'; o['phase'] = 'checking_2fa'
-        else:
-            o['cred_error'] = result.get('msg', '提交失败')
-    save_orders()
-    return jsonify(result)
-
-@app.route("/api/order/<oid>/submit-2fa", methods=["POST"])
-def submit_2fa(oid):
-    data = request.get_json() or {}
-    code = (data.get("code") or "").strip()
-    if len(code) < 6:
-        return jsonify({"code": 400, "msg": "请输入6位验证码"})
-    with orders_lock:
-        o = pending_orders.get(oid)
-        if not o: return jsonify({"code": 404, "msg": "订单不存在"})
-    result = upstream_post('order/submit_2fa', {'token': o['upstream_token'], 'code': code})
-    with orders_lock:
-        if result.get('code') == 200:
-            o['phase'] = 'charging'; o['twofa_required'] = False
-    save_orders()
-    return jsonify(result)
-
-@app.route("/api/order/<oid>/resend-2fa", methods=["POST"])
-def resend_2fa(oid):
-    with orders_lock:
-        o = pending_orders.get(oid)
-        if not o: return jsonify({"code": 404, "msg": "订单不存在"})
-    result = upstream_post('order/resend_2fa', {'token': o['upstream_token'], 'account': o['apple_id']})
-    return jsonify(result)
+    return '<script>alert("操作成功");window.location.href="/admin?key=' + ADMIN_PANEL_KEY + '";</script>'
 
 @app.route("/api/health")
 def health():
@@ -439,5 +485,6 @@ def health():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    print(f"Apple 代充 v4 启动: http://127.0.0.1:{port}")
+    print(f"Apple 代充 v5 启动: http://127.0.0.1:{port}")
+    print(f"Admin: http://127.0.0.1:{port}/admin?key={ADMIN_PANEL_KEY}", flush=True)
     app.run(host="0.0.0.0", port=port, debug=False)

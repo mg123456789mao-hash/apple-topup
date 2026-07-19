@@ -40,8 +40,6 @@
         .btn-primary:disabled { background: var(--border); cursor: not-allowed; }
         .btn-outline { background: transparent; border: 1.5px solid var(--blue); color: var(--blue); }
         .btn-sm { width: auto; display: inline-block; padding: 8px 18px; font-size: 13px; border-radius: 20px; }
-        .btn-warn { background: var(--orange); color: #fff; }
-        .btn-refund { background: transparent; border: 1.5px solid var(--red); color: var(--red); }
         .flex-row { display: flex; gap: 10px; }
         .flex-row .btn { flex: 1; }
         .price-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 14px; }
@@ -53,9 +51,6 @@
         .alert-warn { background: #FFF3E0; color: #C75B00; }
         .alert-ok { background: #E8F5E9; color: #1B5E20; }
         .alert-err { background: #FFEBEE; color: #C62828; }
-        .alert-refund { background: #FFF0F0; color: #C62828; }
-        .status-badge { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 20px; font-size: 13px; font-weight: 500; }
-        .status-proc { background: #E8F2FF; color: #0056CC; }
         .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin 0.6s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
         .center { text-align: center; padding: 18px 0; }
@@ -68,8 +63,6 @@
         .toast { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); background: #1D1D1F; color: #fff; padding: 10px 22px; border-radius: 22px; font-size: 13px; z-index: 999; opacity: 0; pointer-events: none; transition: opacity 0.3s; }
         .toast.show { opacity: 1; }
         .toast.err { background: var(--red); }
-        .progress-bar { background: #E5E5EA; border-radius: 10px; height: 8px; margin: 12px 0; overflow: hidden; }
-        .progress-fill { background: var(--blue); height: 100%; border-radius: 10px; transition: width 1s; }
     </style>
 </head>
 <body>
@@ -90,7 +83,7 @@
                 <div class="step"><div class="step-num">3</div>支付</div>
             </div>
             <h3 style="margin-bottom:6px;">选择充值面值</h3>
-            <p style="font-size:13px;color:var(--text2);margin-bottom:14px;">美元区 Apple ID 充值 · 自动到账</p>
+            <p style="font-size:13px;color:var(--text2);margin-bottom:14px;">美元区 Apple ID 充值 · 人工处理 · 安全可靠</p>
             <div class="denom-grid">
                 <div v-for="d in denominations" :key="d.denomination" class="denom-card" :class="{ sel: selectedDenom === d.denomination }" @click="selectDenom(d)">
                     <div class="denom-amount">${{ d.denomination }}</div>
@@ -134,7 +127,7 @@
             </div>
         </div>
 
-        <!-- STEP 3: 支付 + 多冲少冲 + 2FA + 退款 -->
+        <!-- STEP 3: 支付 + 等待 -->
         <div class="card" v-if="step === 3">
             <div class="steps">
                 <div class="step done"><div class="step-num">✓</div>选择金额</div>
@@ -142,7 +135,7 @@
                 <div class="step active"><div class="step-num">3</div>支付</div>
             </div>
 
-            <!-- 阶段: 等待支付 -->
+            <!-- 等待支付 -->
             <div v-if="phase === 'waiting_payment'">
                 <h3 style="margin-bottom:4px;">💎 支付 USDT</h3>
                 <div class="timer" :class="{ ok: remainingSeconds > 120 }">⏱ {{ timerText }}</div>
@@ -160,141 +153,92 @@
                     <br><span style="color:#55aaff;font-size:11px;">👆 点击复制 · TRC20 网络</span>
                 </div>
 
-                <div class="alert alert-warn">
-                    ⚠️ <strong>请精确转账 {{ selectedUSDT }} USDT</strong><br>
-                    多转或少转将<strong>无法自动下单</strong>，需联系客服处理
-                </div>
+                <div class="alert alert-warn">⚠️ 请<strong>精确</strong>转账 {{ selectedUSDT }} USDT。多转或少转需联系客服处理。</div>
 
                 <div class="center" style="padding:8px;">
                     <p style="font-size:13px;color:var(--text2);"><span class="spinner" style="margin-right:6px;"></span>自动检测中（每10秒）...</p>
                 </div>
             </div>
 
-            <!-- 阶段: 处理中 -->
-            <div v-if="phase === 'processing'" class="center">
-                <div class="emoji-lg">💰</div>
-                <h3>支付已确认</h3>
-                <p style="font-size:14px;color:var(--text2);margin-top:8px;">正在创建订单...</p>
-                <div class="status-badge status-proc" style="margin:10px auto;"><span class="spinner"></span> 处理中</div>
-            </div>
+            <!-- 已付款，等待处理 -->
+            <div v-if="phase === 'paid'" class="center">
+                <div class="emoji-lg">✅</div>
+                <h3>支付成功！</h3>
+                <p style="font-size:14px;color:var(--text2);margin-top:8px;">实收 {{ matchedAmount }} USDT</p>
+                <p style="font-size:13px;color:var(--text2);margin-top:4px;">客服正在处理您的订单，请耐心等待</p>
+                <p style="font-size:12px;color:var(--text2);margin-top:8px;">通常 1-24 小时内完成充值</p>
 
-            <!-- 阶段: 已提交凭证 -->
-            <div v-if="phase === 'need_credentials' || phase === 'submitted' || phase === 'checking_2fa'" class="center">
-                <div class="emoji-lg">📋</div>
-                <h3>订单已创建</h3>
-                <p style="font-size:13px;color:var(--text2);margin-top:4px;">订单号: {{ orderNumber || '处理中...' }}</p>
-                <div class="status-badge status-proc" style="margin:10px auto;"><span class="spinner"></span> 正在提交凭证...</div>
-            </div>
-
-            <!-- 阶段: 需要2FA -->
-            <div v-if="phase === 'need_2fa'" style="margin-top:16px;">
-                <div class="alert alert-info">🔐 需要双重验证，请输入 Apple 设备收到的 6 位验证码</div>
-                <div class="form-group">
-                    <input class="form-input" v-model="twofaCode" type="text" placeholder="输入 6 位验证码" maxlength="6"
-                           style="text-align:center;font-size:22px;letter-spacing:6px;">
+                <!-- 2FA验证码输入 -->
+                <div v-if="twofaNeeded" style="margin-top:16px;text-align:left;">
+                    <div class="alert alert-info">
+                        🔐 <strong>需要双重验证</strong><br>
+                        请在 Apple 设备上查看 6 位验证码，输入下方
+                    </div>
+                    <div class="form-group">
+                        <input class="form-input" v-model="twofaCode" type="text" placeholder="输入 6 位验证码" maxlength="6"
+                               style="text-align:center;font-size:22px;letter-spacing:6px;">
+                    </div>
+                    <button class="btn btn-primary btn-sm" :disabled="twofaCode.length < 6" @click="submit2FA">
+                        提交验证码
+                    </button>
+                    <p v-if="twofaSubmitted" style="color:var(--green);font-size:13px;text-align:center;margin-top:8px;">
+                        ✅ 验证码已提交，客服正在处理
+                    </p>
                 </div>
-                <div class="flex-row">
-                    <button class="btn btn-outline btn-sm" @click="resend2FA">重新发送</button>
-                    <button class="btn btn-primary btn-sm" @click="submit2FA" :disabled="twofaCode.length < 6">提交验证</button>
+                <div v-else>
+                    <button class="btn btn-outline btn-sm" style="margin:12px auto;width:auto;" @click="twofaNeeded = true">
+                        🔐 我有验证码，点击输入
+                    </button>
+                </div>
+
+                <div class="alert alert-info" style="margin-top:12px;">
+                    📧 如有问题请联系：<strong>{{ supportEmail }}</strong>
                 </div>
             </div>
 
-            <!-- 阶段: 充值中 -->
-            <div v-if="phase === 'charging'" class="center">
-                <div class="emoji-lg">⏳</div>
-                <h3>充值处理中</h3>
-                <p style="font-size:14px;color:var(--text2);margin-top:8px;">订单号: {{ orderNumber }}</p>
-                <div class="progress-bar" style="width:200px;margin:12px auto;">
-                    <div class="progress-fill" :style="{width: (rechargeProgress || 10) + '%'}"></div>
+            <!-- 少付 -->
+            <div v-if="phase === 'underpaid'" class="center">
+                <div class="emoji-lg">⚠️</div>
+                <h3>检测到少付</h3>
+                <p style="font-size:14px;color:var(--text2);margin-top:8px;">
+                    应转 {{ selectedUSDT }} USDT，实转 {{ matchedAmount }} USDT<br>
+                    少付了 <strong style="color:var(--red);">{{ shortage }} USDT</strong>
+                </p>
+                <div class="alert alert-warn" style="margin-top:12px;">
+                    📧 请联系客服处理：<strong>{{ supportEmail }}</strong>
                 </div>
-                <p style="font-size:12px;color:var(--text2);">{{ rechargeRemark || '正在充值...' }}</p>
-                <div class="status-badge status-proc" style="margin:10px auto;"><span class="spinner"></span> 处理中</div>
             </div>
 
-            <!-- 阶段: 完成 -->
+            <!-- 多付 -->
+            <div v-if="phase === 'overpaid'" class="center">
+                <div class="emoji-lg">⚠️</div>
+                <h3>检测到多付</h3>
+                <p style="font-size:14px;color:var(--text2);margin-top:8px;">
+                    应转 {{ selectedUSDT }} USDT，实转 {{ matchedAmount }} USDT<br>
+                    多付了 <strong style="color:var(--orange);">{{ overage }} USDT</strong>
+                </p>
+                <div class="alert alert-warn" style="margin-top:12px;">
+                    📧 请联系客服退款：<strong>{{ supportEmail }}</strong>
+                </div>
+            </div>
+
+            <!-- 完成 -->
             <div v-if="phase === 'done'" class="center">
                 <div class="emoji-xl">✅</div>
                 <h3>充值完成！</h3>
-                <p style="font-size:14px;color:var(--green);margin-top:8px;">{{ rechargeRemark || '充值已到账' }}</p>
+                <p style="font-size:14px;color:var(--green);margin-top:8px;">充值已到账，请检查您的 Apple 账户</p>
                 <button class="btn btn-primary" style="margin-top:16px;" @click="resetAll">发起新的充值</button>
-            </div>
-
-            <!-- 阶段: 多付 -->
-            <div v-if="phase === 'overpaid'" class="center">
-                <div class="emoji-lg">⚠️</div>
-                <h3>检测到您多付了</h3>
-                <p style="font-size:14px;color:var(--text2);margin-top:8px;">
-                    应转 {{ selectedUSDT }} USDT，实际转了 {{ matchedAmount }} USDT<br>
-                    多付了 <strong style="color:var(--orange);">{{ overage }} USDT</strong>
-                </p>
-                <p style="font-size:13px;color:var(--text2);margin-top:8px;">系统无法自动处理多付订单</p>
-
-                <div v-if="!refundRequested">
-                    <div class="form-group" style="text-align:left;margin-top:12px;">
-                        <label class="form-label">您的 TRC20 退款地址</label>
-                        <input class="form-input" v-model="refundAddress" type="text" placeholder="输入您的 USDT-TRC20 地址（T开头34位）">
-                    </div>
-                    <button class="btn btn-warn" :disabled="!refundAddress || refundAddress.length < 34" @click="requestRefund">
-                        💰 申请退款 {{ matchedAmount }} USDT
-                    </button>
-                </div>
-                <div v-else class="alert alert-ok" style="margin-top:12px;">
-                    ✅ 退款申请已提交，将在 <strong>24 小时内</strong>退回到 {{ refundAddress }}
-                </div>
-
-                <div class="alert alert-info" style="margin-top:12px;">
-                    📞 如有疑问：<br>
-                    Telegram: {{ supportTg }}<br>
-                    邮箱: {{ supportEmail }}
-                </div>
-            </div>
-
-            <!-- 阶段: 少付 -->
-            <div v-if="phase === 'underpaid'" class="center">
-                <div class="emoji-lg">⚠️</div>
-                <h3>检测到您少付了</h3>
-                <p style="font-size:14px;color:var(--text2);margin-top:8px;">
-                    应转 {{ selectedUSDT }} USDT，实际转了 {{ matchedAmount }} USDT<br>
-                    少付了 <strong style="color:var(--red);">{{ shortage }} USDT</strong>
-                </p>
-                <p style="font-size:13px;color:var(--text2);margin-top:8px;">系统无法自动处理少付订单</p>
-
-                <div v-if="!refundRequested">
-                    <div class="form-group" style="text-align:left;margin-top:12px;">
-                        <label class="form-label">您的 TRC20 退款地址</label>
-                        <input class="form-input" v-model="refundAddress" type="text" placeholder="输入您的 USDT-TRC20 地址（T开头34位）">
-                    </div>
-                    <button class="btn btn-warn" :disabled="!refundAddress || refundAddress.length < 34" @click="requestRefund">
-                        💰 申请退款 {{ matchedAmount }} USDT
-                    </button>
-                </div>
-                <div v-else class="alert alert-ok" style="margin-top:12px;">
-                    ✅ 退款申请已提交，将在 <strong>24 小时内</strong>退回到 {{ refundAddress }}
-                </div>
-
-                <div class="alert alert-info" style="margin-top:12px;">
-                    📞 如有疑问：<br>
-                    Telegram: {{ supportTg }}<br>
-                    邮箱: {{ supportEmail }}
-                </div>
             </div>
 
             <!-- 失败 -->
             <div v-if="phase === 'failed'" class="center">
                 <div class="emoji-lg">❌</div>
                 <h3>充值失败</h3>
-                <p style="font-size:14px;color:var(--red);margin-top:8px;">{{ errorMessage }}</p>
-                <div v-if="!refundRequested" style="margin-top:12px;">
-                    <div class="form-group" style="text-align:left;">
-                        <label class="form-label">TRC20 退款地址（如需要退款）</label>
-                        <input class="form-input" v-model="refundAddress" type="text" placeholder="T开头34位地址">
-                    </div>
-                    <button class="btn btn-warn" :disabled="!refundAddress || refundAddress.length < 34" @click="requestRefund">
-                        申请退款
-                    </button>
+                <p style="font-size:14px;color:var(--red);margin-top:8px;">请联系客服处理</p>
+                <div class="alert alert-info" style="margin-top:12px;">
+                    📧 <strong>{{ supportEmail }}</strong>
                 </div>
-                <div v-else class="alert alert-ok" style="margin-top:12px;">✅ 退款申请已提交</div>
-                <button class="btn btn-primary" style="margin-top:12px;" @click="resetAll">重新开始</button>
+                <button class="btn btn-primary" style="margin-top:16px;" @click="resetAll">重新开始</button>
             </div>
 
             <!-- 过期 -->
@@ -305,20 +249,16 @@
                 <button class="btn btn-primary" style="margin-top:16px;" @click="resetAll">重新下单</button>
             </div>
 
-            <!-- 售后提示 (始终显示在阶段3底部) -->
             <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);text-align:center;">
-                <p style="font-size:11px;color:var(--text2);">
-                    📞 售后/客服：<br>
-                    Telegram: {{ supportTg }}<br>
-                    邮箱: {{ supportEmail }}<br>
-                    <span style="font-size:10px;">多转/少转/订单问题请及时联系</span>
+                <p style="font-size:12px;color:var(--text2);">
+                    📧 客服邮箱：<strong>{{ supportEmail }}</strong>
                 </p>
             </div>
         </div>
 
         <div class="footer">
-            <p>App Store 充值服务 · 全自动处理</p>
-            <p>TRC20 网络 · 自动检测 · 自动到账</p>
+            <p>App Store 充值服务 · 人工处理 · 安全可靠</p>
+            <p>TRC20 网络 · 自动检测 · 快速到账</p>
             <p style="margin-top:8px;"><a href="#" style="color:var(--text2);">隐私政策</a> · <a href="#" style="color:var(--text2);">使用条款</a> · <a href="#" style="color:var(--text2);">支持</a></p>
             <p style="margin-top:4px;">Copyright © 2026 Apple Store. 保留所有权利。</p>
         </div>
@@ -332,17 +272,14 @@
             return {
                 loading: true, step: 1,
                 denominations: [], usdtAddress: '',
-                supportTg: '@your_telegram', supportEmail: 'MG123456789mao@outlook.com',
+                supportEmail: 'MG123456789mao@outlook.com',
                 selectedDenom: null, customAmount: null, isCustom: false,
                 selectedPrice: 0, selectedUSDT: 0, selectedAmount: 0,
                 appleId: '', applePassword: '',
-                orderId: null, orderNumber: null,
-                phase: 'waiting_payment',
-                twofaCode: '', errorMessage: '',
-                rechargeProgress: 10, rechargeRemark: '',
-                remainingSeconds: 1800, timerText: '30:00',
+                orderId: null, phase: 'waiting_payment',
                 matchedAmount: 0, shortage: 0, overage: 0,
-                refundAddress: '', refundRequested: false,
+                remainingSeconds: 1800, timerText: '30:00',
+                twofaNeeded: false, twofaCode: '', twofaSubmitted: false,
                 pollTimer: null, countdownTimer: null,
                 toast: { show: false, msg: '', type: 'info' }
             };
@@ -364,10 +301,7 @@
                     if(d.code===200){
                         self.denominations=d.data.denominations;
                         self.usdtAddress=d.data.usdt_address;
-                        if(d.data.support){
-                            self.supportTg=d.data.support.tg;
-                            self.supportEmail=d.data.support.email;
-                        }
+                        if(d.data.support_email) self.supportEmail=d.data.support_email;
                     }
                     self.loading=false;
                 }).catch(function(){self.loading=false;});
@@ -399,6 +333,9 @@
                     }else{self.showToast(d.msg||'失败','err');}
                 }).catch(function(e){self.showToast('网络错误: '+e.message,'err');});
             },
+            twofaNeedShow: function() {
+                this.twofaNeeded = (this.twofaNeeded === undefined) ? false : this.twofaNeeded;
+            },
             startCountdown: function() {
                 var self=this;this.updateTimerText();
                 this.countdownTimer=setInterval(function(){
@@ -417,54 +354,25 @@
                     fetch('/api/order/status/'+self.orderId).then(function(r){return r.json();}).then(function(d){
                         if(d.code!==200||!d.data)return;
                         var dd=d.data;
-                        if(dd.status==='expired'){self.phase='expired';self.stopPolling();return;}
-                        if(dd.status==='failed'){self.phase='failed';self.errorMessage=dd.error||'订单失败';self.stopPolling();return;}
-                        if(dd.status==='overpaid'){self.phase='overpaid';self.matchedAmount=dd.matched_amount;self.overage=dd.overage;self.refundRequested=dd.refund_requested;self.stopPolling();return;}
-                        if(dd.status==='underpaid'){self.phase='underpaid';self.matchedAmount=dd.matched_amount;self.shortage=dd.shortage;self.refundRequested=dd.refund_requested;self.stopPolling();return;}
-                        if(dd.paid||dd.status==='processing'){
-                            if(dd.phase==='charging'){self.phase='charging';self.orderNumber=dd.order_number;}
-                            else if(dd.phase==='done'||dd.status==='completed'){self.phase='done';self.stopPolling();}
-                            else if(dd.phase==='need_2fa'||dd.twofa_required){self.phase='need_2fa';self.orderNumber=dd.order_number;}
-                            else if(dd.phase==='checking_2fa'||dd.phase==='submitted'||dd.phase==='need_credentials'){self.phase='need_credentials';self.orderNumber=dd.order_number;}
-                            else {self.phase='processing';}
-                        }
-                        if(dd.order_number&&!self.orderNumber)self.orderNumber=dd.order_number;
-                        self.refundRequested=dd.refund_requested;
+                        if(dd.status==='paid'){self.phase='paid';self.matchedAmount=dd.matched_amount;self.stopCountdownOnly();}
+                        else if(dd.status==='overpaid'){self.phase='overpaid';self.matchedAmount=dd.matched_amount;self.overage=dd.overage;self.stopCountdownOnly();}
+                        else if(dd.status==='underpaid'){self.phase='underpaid';self.matchedAmount=dd.matched_amount;self.shortage=dd.shortage;self.stopCountdownOnly();}
+                        else if(dd.status==='completed'){self.phase='done';self.stopPolling();}
+                        else if(dd.status==='failed'){self.phase='failed';self.stopPolling();}
+                        else if(dd.status==='expired'){self.phase='expired';self.stopPolling();}
                     });
                 };
                 check();this.pollTimer=setInterval(check,5000);
+            },
+            stopCountdownOnly: function() {
+                if(this.countdownTimer){clearInterval(this.countdownTimer);this.countdownTimer=null;}
             },
             stopPolling: function() {
                 if(this.pollTimer){clearInterval(this.pollTimer);this.pollTimer=null;}
                 if(this.countdownTimer){clearInterval(this.countdownTimer);this.countdownTimer=null;}
             },
-            requestRefund: function() {
-                var self=this;
-                if(!this.refundAddress||this.refundAddress.length<34){this.showToast('请输入有效的TRC20地址','err');return;}
-                fetch('/api/order/'+this.orderId+'/request-refund',{method:'POST',headers:{'Content-Type':'application/json'},
-                    body:JSON.stringify({refund_address:this.refundAddress})
-                }).then(function(r){return r.json();}).then(function(d){
-                    if(d.code===200){self.refundRequested=true;self.showToast('退款申请已提交');}
-                    else{self.showToast(d.msg||'申请失败','err');}
-                });
-            },
-            submit2FA: function() {
-                var self=this;
-                fetch('/api/order/'+this.orderId+'/submit-2fa',{method:'POST',headers:{'Content-Type':'application/json'},
-                    body:JSON.stringify({code:this.twofaCode})
-                }).then(function(r){return r.json();}).then(function(d){
-                    if(d.code===200){self.phase='charging';self.twofaCode='';}
-                    else{self.showToast(d.msg||'验证码错误','err');}
-                });
-            },
-            resend2FA: function() {
-                fetch('/api/order/'+this.orderId+'/resend-2fa',{method:'POST'}).then(function(){});
-            },
-            retrySubmit: function() {
-                fetch('/api/order/'+this.orderId+'/submit-credentials',{method:'POST'});
-            },
             copyAddress: function() {
-                navigator.clipboard.writeText(this.usdtAddress).then(function(){alert('已复制！请用TRC20网络转'+this.selectedUSDT+'USDT');});
+                navigator.clipboard.writeText(this.usdtAddress).then(function(){alert('已复制！请用TRC20网络转账');});
             },
             resetAll: function() {
                 this.stopPolling();
@@ -472,15 +380,46 @@
                 this.selectedDenom=null;this.customAmount=null;this.isCustom=false;
                 this.selectedPrice=0;this.selectedUSDT=0;this.selectedAmount=0;
                 this.appleId='';this.applePassword='';
-                this.orderId=null;this.orderNumber=null;this.twofaCode='';
-                this.errorMessage='';this.remainingSeconds=1800;
+                this.orderId=null;this.twofaNeeded=false;this.twofaCode='';this.twofaSubmitted=false;
                 this.matchedAmount=0;this.shortage=0;this.overage=0;
-                this.refundAddress='';this.refundRequested=false;
+                this.remainingSeconds=1800;
             },
             showToast: function(msg,type) {
                 var self=this;type=type||'info';
                 this.toast={show:true,msg:msg,type:type};
                 setTimeout(function(){self.toast.show=false;},3000);
+            },
+            submit2FA: function() {
+                var self=this;
+                fetch('/api/order/'+this.orderId+'/submit-2fa',{method:'POST',headers:{'Content-Type':'application/json'},
+                    body:JSON.stringify({code:this.twofaCode})
+                }).then(function(r){return r.json();}).then(function(d){
+                    if(d.code===200){self.twofaSubmitted=true;self.showToast('验证码已提交');}
+                    else{self.showToast(d.msg||'提交失败','err');}
+                });
+            },
+            playAlertSound: function() {
+                // 使用 Web Audio API 播放警报声音
+                try {
+                    var ctx = new (window.AudioContext || window.webkitAudioContext)();
+                    // 播放三段警报音
+                    [800, 1000, 800].forEach(function(freq, i) {
+                        var osc = ctx.createOscillator();
+                        var gain = ctx.createGain();
+                        osc.connect(gain);
+                        gain.connect(ctx.destination);
+                        osc.type = 'square';
+                        osc.frequency.value = freq;
+                        gain.gain.value = 0.3;
+                        osc.start(ctx.currentTime + i * 0.2);
+                        osc.stop(ctx.currentTime + i * 0.2 + 0.15);
+                    });
+                } catch(e) {
+                    // 如果 Web Audio 不可用，尝试用传统方式
+                    try {
+                        new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACAf39/f4B/f3+AgH9/f3+Af39/gIB/f3+Af39/gIB/f3+AgH9/f3+Af39/gIB/f3+AgH9/f3+Af39/f4B/f3+Af39/gIB/f3+Af39/gIB/f3+Af39/f4B/f39/f39/f39/f3+Af39/f4B/f3+Af39/gIB/f3+Af39/f4B/f3+Af3+AgH9/f3+AgICAgICAgH9/f4B/f3+Af39/f4B/f3+Af39/gID/f3+Af39/gIB/f39/f3+AgH9/f3+Af39/f4B/f3+Af39/gIB/f39/f3+AgICAgICAgICAgICAgH9/f3+Af39/f4B/f3+Af39/gIB/f39/f3+AgICAgICAgICAgICAgH9/f3+Af39/f4CAf39/f3+AgH9/f39/gICAf39/f3+AgICAgICAgIB/f3+AgICAgICAgICAgICAgH9/f3+Af39/gICAf39/f3+AgH9/f39/gICAf39/f3+AgICAgICAgID/f3+AgICAgICAgICAgICAgH9/f3+AgICAgICAgICAgICAgH9/f3+Af39/gICAf39/f3+AgH9/f3+AgH9/f3+Af39/gIB/f39/gICAf39/f3+AgICAgICAgID/f3+AgICAgICAgICAgICAgH9/f4CAgICAgICAgICAgICAgH9/f3+Af39/gIB/f3+AgICAf39/f3+AgIB/f39/f3+AgICAgICAgICAgICAgICAgICAgH9/f4CAf39/gICAf39/gIB/f3+AgICAgICAgICAgICAgICAgICAgIB/f3+AgICAgICAgIB/f3+AgH9/f3+AgICAgICAgH9/f39/f4CAf39/gIB/f3+AgH9/f4CAf3+AgH9/f3+Af39/gIB/f39/f3+AgICAgICAgICAgICAgID/f3+AgICAgICAgICAgICAgID/f39/f3+AgICAgICAgH9/f4CAf39/f3+AgH9/f3+Af3+AgH9/f4CAf3+AgH9/f3+Af39/gIB/f39/f3+AgH9/f3+AgICAgICAgICAgIB/f39/f3+AgICAgICAgICAf39/gICAf3+AgH9/f3+Af39/gICAf39/f3+AgH9/f39/f3+AgICAgICAgIB/f3+AgICAgICAgICAf3+AgICAgICAgIB/f3+AgICAf3+AgICAgICAgH9/f4CAf3+AgH9/gICAf3+AgH9/f3+AgH9/f4CAf4CAf3+AgH9/f3+AgICAgICAgH9/f3+AgH9/f3+AgH9/f3+AgH9/f39/f3+AgICAf39/f3+AgH9/f39/f3+AgH9/f3+Af39/gIB/f39/gH9/f3+Af3+AgH9/f39/f3+AgH9/f3+AgH9/f3+AgH9/f39/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgICAf3+AgICAf3+AgICAf3+AgH9/f3+AgID/f3+AgICAgICAgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgID/f3+AgID/f3+AgID/f3+AgID/f3+AgP9/f3+AgH9/f39/f3+AgH9/f3+AgP9/f3+AgP9/f3+AgP9/f3+AgH9/f39/f3+AgID/f3+AgID/f3+AgH9/f3+AgID/f3+AgH9/f39/f3+AgH9/f39/f3+AgP9/f39/f3+AgP9/f3+AgP9/f3+AgID/f3+AgH9/f3+AgID/f3+AgH9/f4CAf3+AgH9/f3+AgH9/f3+AgH9/f39/f39/f39/f3+AgID/f3+AgID/f3+AgID/f3+AgH9/f39/f3+AgID/f3+AgH9/f39/f3+AgH9/f39/f39/f3+AgP9/f39/f3+AgH9/f3+AgH9/f4CAf39/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f39/f3+AgH9/f39/f3+AgH9/f3+AgH9/f3+AgP9/f39/f3+AgID/f3+AgID/f3+AgID/f39/f3+AgP9/f3+AgH9/f3+AgH9/f39/f3+AgID/f3+AgH9/f3+AgP9/f39/f3+AgID/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgP9/f39/f39/f3+AgH9/f3+AgH9/f3+AgP9/f3+AgH9/f3+AgH9/f3+AgID/f39/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgP9/f3+AgH9/f39/f3+AgH9/f3+AgP9/f3+AgID/f3+AgID/f3+AgID/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgP9/f3+AgP9/f3+AgP9/f3+AgH9/f3+AgH9/f3+AgP9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgID/f3+AgID/f3+AgH9/f3+AgID/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgP9/f3+AgH9/f3+AgH9/f3+AgID/f3+AgID/f3+AgP9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgP9/f39/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgP9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgP9/f3+AgP9/f3+AgID/f3+AgID/f3+AgH9/f3+AgID/f3+AgP9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgP9/f3+AgH9/f3+AgH9/f3+AgP9/f3+AgID/f3+AgH9/f3+AgP9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgP9/f3+AgP9/f3+AgP9/f3+AgH9/f3+AgH9/f3+AgP9/f39/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgP9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgP9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgP9/f3+AgP9/f3+AgH9/f39/f3+AgH9/f39/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgP9/f3+AgP9/f3+AgID/f3+AgH9/f3+AgP9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f39/f3+AgH9/f3+AgH9/f3+AgID/f3+AgH9/f3+AgH9/f3+AgID/f3+AgID/f3+AgH9/f3+AgH9/f3+AgH9/f4CAf3+AgH9/f39/f39/f3+AgID/f3+AgH9/f3+AgID/f3+AgID/f3+AgID/f3+AgID/f3+AgH9/f39/f3+AgID/f3+AgH9/f3+AgH9/f3+AgID/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f39/f3+AgH9/f3+AgID/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgID/f3+AgH9/f3+AgH9/f3+AgH9/f39/f3+AgID/f3+AgID/f3+AgH9/f3+AgID/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgP9/f3+AgH9/f3+AgP9/f3+AgH9/f3+AgP9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgP9/f3+AgP9/f3+AgP9/f3+AgP9/f3+AgH9/f3+AgID/f3+AgID/f3+AgP9/f3+AgH9/f4CAf3+AgH9/f39/f39/f3+AgH9/f3+AgH9/f3+AgID/f3+AgID/f3+AgID/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgID/f4CAf3+AgH9/f39/f3+AgP9/f39/f39/f3+AgP9/f3+AgH9/f3+AgID/f4CAf3+AgP9/f3+AgH9/f3+AgID/f4CAf3+AgID/f3+AgH9/f3+AgH9/f3+AgP9/f3+AgP9/f3+AgP9/f3+AgID/f3+AgID/f3+AgH9/f3+AgID/f3+AgID/f3+AgH9/f3+AgID//3+AgP9/f3+AgID/f3+AgP9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgID/f4CAf3+AgH9/f39/f3+AgID/f4CAf3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgP9/f3+AgP9/f3+AgP9/f3+AgH9/f3+AgID/f3+AgID/f3+AgP9/f3+AgP9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgID/f3+AgID/f3+AgID/f3+AgID/f3+AgH9/f3+AgID//3+AgH9/f3+AgID/f3+AgH9/f39/f3+AgID/f4CAf3+AgH9/f3+AgH9/f3+AgH9/f3+AgID/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgID/f4CAf3+AgID/f3+AgH9/f3+AgID/f4CAf3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgID/f3+AgID/f3+AgID/f3+AgID/f3+AgH9/f3+AgID/f3+AgH9/f3+AgID/f4CAf3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgID/f4CAf39/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgID/f3+AgH9/f3+AgID/f3+AgID/f3+AgID/f3+AgH9/f3+AgH9/f3+AgH9/f39/f3+AgID/f3+AgID/f3+AgID/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f39/f3+AgID/f3+AgH9/f3+AgID/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgID/f3+AgID/f3+AgH9/f3+AgID/f3+AgID/f3+AgH9/f3+AgID/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgID/f3+AgH9/f3+AgID/f3+AgID/f3+AgH9/f3+AgH9/f3+AgID/f3+AgID/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgID/f3+AgH9/f3+AgID/f3+AgH9/f3+AgID/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+AgH9/f3+').play();
+                    } catch(e2) { /* 静默失败 */ }
+                }
             }
         },
         mounted: function(){this.loadPricing();},

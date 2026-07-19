@@ -4,6 +4,5 @@ orders.json
 cloudflared.exe
 ngrok.exe
 ngrok.zip
-.env
 .tunnel_url
 .current_url.txt
