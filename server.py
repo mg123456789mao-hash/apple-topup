@@ -28,7 +28,27 @@ DENOMINATIONS = [25, 50, 100, 200, 300, 500, 1000]
 CUSTOM_MIN, CUSTOM_MAX, CUSTOM_STEP = 10, 1200, 5
 TOLERANCE = 0.02
 
-# ============ 持久化订单 ============
+USERS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'users.json')
+
+# ============ 用户系统 ============
+import hashlib as _hashlib
+users = {}
+users_lock = threading.Lock()
+
+def load_users():
+    global users
+    try:
+        if os.path.exists(USERS_FILE):
+            with open(USERS_FILE, 'r') as f: users = json.load(f)
+    except: pass
+
+def save_users():
+    try:
+        with open(USERS_FILE, 'w') as f: json.dump(users, f, ensure_ascii=False, indent=2)
+    except: pass
+
+def hash_pw(pw):
+    return _hashlib.sha256(pw.encode()).hexdigest()
 pending_orders = {}
 orders_lock = threading.Lock()
 
@@ -119,7 +139,51 @@ def monitor():
         time.sleep(10)
 
 load_orders()
+load_users()
 threading.Thread(target=monitor, daemon=True).start()
+
+# ============ 注册登录路由 ============
+@app.route("/api/register", methods=["POST"])
+def register():
+    data = request.get_json() or {}
+    username = (data.get("username") or "").strip()
+    password = (data.get("password") or "").strip()
+    if not username or len(username) < 2:
+        return jsonify({"code": 400, "msg": "用户名至少2个字符"})
+    if not password or len(password) < 4:
+        return jsonify({"code": 400, "msg": "密码至少4个字符"})
+    with users_lock:
+        if username in users:
+            return jsonify({"code": 400, "msg": "用户名已存在"})
+        users[username] = {"username": username, "password": hash_pw(password), "created_at": time.time(), "orders": []}
+        save_users()
+    return jsonify({"code": 200, "msg": "注册成功", "data": {"username": username}})
+
+@app.route("/api/login", methods=["POST"])
+def login():
+    data = request.get_json() or {}
+    username = (data.get("username") or "").strip()
+    password = (data.get("password") or "").strip()
+    with users_lock:
+        u = users.get(username)
+        if not u or u["password"] != hash_pw(password):
+            return jsonify({"code": 400, "msg": "用户名或密码错误"})
+    token = secrets.token_hex(16)
+    u["token"] = token
+    u["token_time"] = time.time()
+    save_users()
+    return jsonify({"code": 200, "msg": "登录成功", "data": {"username": username, "token": token}})
+
+def check_auth():
+    """检查登录状态"""
+    data = request.get_json() or {}
+    token = (data.get("token") or "").strip()
+    if not token: return None
+    with users_lock:
+        for u in users.values():
+            if u.get("token") == token:
+                return u["username"]
+    return None
 
 @app.route("/api/order/<oid>/submit-2fa", methods=["POST"])
 def submit_2fa(oid):

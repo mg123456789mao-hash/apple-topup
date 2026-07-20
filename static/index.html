@@ -74,7 +74,33 @@
     </div>
     <div class="toast" :class="{ show: toast.show, err: toast.type === 'err' }">{{ toast.msg }}</div>
 
-    <div class="main" v-if="!loading">
+    <!-- ===== 未登录：登录/注册页 ===== -->
+    <div class="main" v-if="!user">
+        <div class="card">
+            <h3 style="margin-bottom:16px;text-align:center;">{{ isRegister ? '注册' : '登录' }}</h3>
+            <div class="form-group">
+                <label class="form-label">用户名</label>
+                <input class="form-input" v-model="loginUsername" type="text" placeholder="请输入用户名">
+            </div>
+            <div class="form-group">
+                <label class="form-label">密码</label>
+                <input class="form-input" v-model="loginPassword" type="password" placeholder="请输入密码">
+            </div>
+            <button class="btn btn-primary" @click="doLogin" v-if="!isRegister">登录</button>
+            <button class="btn btn-primary" @click="doRegister" v-if="isRegister">注册</button>
+            <p style="text-align:center;margin-top:12px;font-size:13px;color:var(--blue);cursor:pointer;" @click="isRegister = !isRegister">
+                {{ isRegister ? '已有账号？去登录' : '没有账号？去注册' }}
+            </p>
+        </div>
+    </div>
+
+    <!-- ===== 已登录：下单页 ===== -->
+    <div class="main" v-if="user && !loading">
+
+        <div style="text-align:right;font-size:12px;color:var(--text2);margin-bottom:8px;">
+            👤 {{ user }} <span style="color:var(--blue);cursor:pointer;margin-left:10px;" @click="doLogout">退出</span>
+        </div>
+
         <!-- STEP 1: 选择金额 -->
         <div class="card" v-if="step === 1">
             <div class="steps">
@@ -270,6 +296,8 @@
     var app = Vue.createApp({
         data: function() {
             return {
+                user: null, userToken: null, isRegister: false,
+                loginUsername: "", loginPassword: "",
                 loading: true, step: 1,
                 denominations: [], usdtAddress: '',
                 supportEmail: 'MG123456789mao@outlook.com',
@@ -422,7 +450,12 @@
                 }
             }
         },
-        mounted: function(){this.loadPricing();},
+        mounted: function(){
+            var u=localStorage.getItem("apple_user");
+            var t=localStorage.getItem("apple_token");
+            if(u&&t){this.user=u;this.userToken=t;}
+            this.loadPricing();
+        },
         beforeUnmount: function(){this.stopPolling();}
     });
     app.mount('#app');
