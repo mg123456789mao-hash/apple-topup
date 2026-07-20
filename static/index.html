@@ -323,6 +323,15 @@
             }
         },
         methods: {
+            doLogin: function() {
+                var self=this;
+                fetch("/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:this.loginUsername,password:this.loginPassword})}).then(function(r){return r.json();}).then(function(d){if(d.code===200){self.user=d.data.username;self.userToken=d.data.token;localStorage.setItem("apple_user",d.data.username);localStorage.setItem("apple_token",d.data.token);self.showToast("登录成功");}else{self.showToast(d.msg,"err");}});
+            },
+            doRegister: function() {
+                var self=this;
+                fetch("/api/register",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:this.loginUsername,password:this.loginPassword})}).then(function(r){return r.json();}).then(function(d){if(d.code===200){self.showToast("注册成功，请登录");self.isRegister=false;}else{self.showToast(d.msg,"err");}});
+            },
+            doLogout: function() {this.user=null;this.userToken=null;localStorage.removeItem("apple_user");localStorage.removeItem("apple_token");},
             loadPricing: function() {
                 var self = this;
                 fetch('/api/pricing').then(function(r){return r.json();}).then(function(d){
